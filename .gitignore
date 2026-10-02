@@ -1,0 +1,22 @@
+# Whitelist: hanya docs/ dan zabbix/ yang masuk repo. File lain di folder ini (aset, tiket, dokumen pribadi) tidak boleh ikut.
+/*
+!/.gitignore
+!/.gitattributes
+!/README.md
+!/docs/
+!/zabbix/
+
+# Data aset hasil export (serial number & data PC kantor)
+aset-*.csv
+**/hasil/
+
+# Binary yang bisa diunduh lagi dari cdn.zabbix.com
+*.msi
+*.rar
+
+# Tidak terpakai (isinya sempat tertimpa)
+zabbix/fping-wrapper.sh
+
+# Rahasia
+.env
+*.token

@@ -97,7 +97,7 @@ Catatan teknis SSH dari Windows: kalau muncul `Bad owner or permissions on ...\.
 | `docker-compose.yml` | Definisi 4 container Zabbix | VM (`docker compose up -d`) |
 | `zabbix_server_locations.conf` | Lokasi `fping` dll. untuk server | Di-mount ke container server |
 | `fping-wrapper.sh` | **Tidak terpakai** (sudah tidak dipanggil). Isinya sempat tertimpa tak sengaja. Aman diabaikan atau dihapus. | - |
-| `deploy-windows/` | **Paket siap bagi** untuk PC Windows: `Install.bat`, `Install-Standalone.ps1`, MSI Agent 2. Server target sudah 192.168.0.182. | PC target |
+| `deploy-windows/` | **Paket siap bagi** untuk PC Windows: `Install.bat`, `Install-Standalone.ps1`, MSI Agent 2 (MSI tidak ada di repo, unduh sendiri). Server target sudah 192.168.0.182. Juga `Update-ZabbixServer.bat/.ps1` (**darurat**: mengganti alamat server di agent yang sudah terpasang, lihat 7.7). | PC target |
 | `deploy-windows.rar` | Arsip paket di atas | - |
 | `deploy/` | Folder kerja admin. Berisi script setup server dan export aset (tabel di bawah). Juga salinan paket PC. | Laptop admin |
 | `deploy-linux/` | `install-agent-ubuntu.sh` dan `setup-autoregistration-linux.ps1` untuk PC Ubuntu. **Belum pernah dijalankan.** | PC Ubuntu / laptop admin |
@@ -189,11 +189,26 @@ Jalankan `setup-autoregistration-linux.ps1` sekali dari laptop admin, lalu di ti
 
 Pemisah kolom CSV mengikuti pengaturan regional Windows (`-UseCulture`): titik koma di Indonesia. File tidak bisa ditimpa kalau masih terbuka di Excel.
 
-### 7.4 Memasang ulang / pindah server Zabbix
-1. VM baru dengan Docker, salin `docker-compose.yml` dan `zabbix_server_locations.conf` ke `~/zabbix` (hapus baris mount `fping-wrapper` di compose), `docker compose up -d`.
-2. Ganti password `Admin`, buat API token.
-3. Jalankan berurutan: `setup-autoregistration.ps1` → `setup-snmp-discovery.ps1` → `setup-asset-template.ps1`.
-4. Ubah `$ZabbixServer` di `Install-Standalone.ps1` ke IP baru; PC lama perlu pasang ulang atau ubah `Server`/`ServerActive` di `zabbix_agent2.conf`.
+### 7.4 Deploy ulang / pindah ke server lain
+Prasyarat: mesin Linux (VM Hyper-V atau fisik) dengan Docker + Compose. Zabbix server tidak berjalan di Windows.
+
+**Kunci kemudahan: beri server baru IP yang sama (`192.168.0.182`).** Matikan server lama dulu agar tidak bentrok. Dengan IP yang sama, semua agent di PC langsung tersambung lagi tanpa diubah. Kalau IP harus beda, lihat 7.7.
+
+**Pilihan A: mulai bersih** (cukup untuk kondisi sekarang, data masih sedikit)
+1. Siapkan VM Ubuntu + Docker (urutan di `docs/hyperv-zabbix-setup.md`: Hyper-V, virtual switch, VM Gen2, Ubuntu 22.04, IP statis, Docker).
+2. Clone repo, salin `zabbix/docker-compose.yml` dan `zabbix/zabbix_server_locations.conf` ke `~/zabbix` di VM. Hapus baris mount `fping-wrapper` bila ada. Ganti password database lewat `.env`. Lalu `docker compose up -d`.
+3. Buka web `:8080`, login `Admin` (password bawaan), **langsung ganti password**, buat API token.
+4. Dari laptop admin jalankan berurutan, memakai `-Url` server baru:
+   `setup-autoregistration.ps1` → `setup-snmp-discovery.ps1` (lalu `-SyncMacros` setelah host muncul) → `setup-asset-template.ps1`. Hapus token setelah selesai.
+5. Agent PC: kalau IP sama, host muncul sendiri lewat autoregistration. Kalau IP beda, lihat 7.7.
+Yang hilang: riwayat grafik/metrik lama dan host manual yang dibuat lewat web (host otomatis dibuat ulang).
+
+**Pilihan B: pindahkan database** (mempertahankan riwayat dan semua pengaturan manual). *Belum diuji.*
+1. Di server lama: `docker exec zabbix-db pg_dump -U zabbix -d zabbix -Fc > ~/zabbix.dump`, salin file ke server baru.
+2. Di server baru: `docker compose up -d zabbix-db` **saja** (jangan jalankan server dulu supaya skema kosong tidak dibuat). Tunggu siap, lalu `docker exec -i zabbix-db pg_restore -U zabbix -d zabbix --clean --if-exists < ~/zabbix.dump`.
+3. `docker compose up -d`. Versi Zabbix server baru harus **sama atau lebih baru** dari yang lama (server menaikkan skema sendiri; tidak bisa turun versi). Pin tag image di compose agar pasti.
+4. Setelah naik, cek **Reports → System information** (tidak ada error) dan **Data collection → Hosts** (host dan data masih ada).
+Catatan: password database di compose baru harus sama dengan yang ada di dump, atau jalankan `ALTER USER`.
 
 ### 7.5 Cara aman memakai API token di PowerShell
 `$t = Read-Host "Token"` lalu paste dengan **klik kanan** (Ctrl+V tidak bekerja di prompt secure). Setelah selesai: hapus token di web, `Remove-Variable t`. Jangan paste output terminal yang memuat token ke chat/dokumen.
@@ -206,6 +221,22 @@ docker compose logs -f zabbix-server  # log server
 docker compose restart                # restart semua
 docker compose pull && docker compose up -d   # upgrade image (baca catatan versi di bagian 8)
 ```
+
+### 7.7 Kalau IP server Zabbix berubah (darurat)
+**Dampak:** alamat server tertulis di tiap agent (`Server=` dan `ServerActive=` di `zabbix_agent2.conf`). Kalau IP VM berubah, semua PC berhenti mengirim data dan hostnya satu per satu jadi merah. Polling SNMP (AP, printer, dll.) tetap jalan karena server yang menghubungi perangkat.
+
+**Pencegahan (lakukan lebih dulu, lihat bagian 9):** IP `192.168.0.182` statis di Ubuntu, harus di-**kecualikan/reservasi di DHCP router**, dan jangan diubah tanpa rencana. Opsi lain: pakai nama DNS di agent (hanya efektif kalau PC memakai DNS yang me-resolve nama itu).
+
+**Perbaikan kalau terjadi:**
+1. Pastikan server baru bisa dijangkau di IP baru (`Test-NetConnection <IP> -Port 10051`).
+2. Di tiap PC Windows jalankan (sebagai Administrator) script dari `zabbix/deploy-windows/`:
+   `Update-ZabbixServer.bat <IP-baru>`  (atau `Update-ZabbixServer.ps1 -NewServer <IP-baru>`)
+   Script mengecek koneksi, membuat cadangan `zabbix_agent2.conf.bak-<tanggal>`, mengganti hanya `Server=` dan `ServerActive=`, lalu restart service "Zabbix Agent 2". Aman dijalankan ulang.
+3. PC Ubuntu: ubah dua baris yang sama di `/etc/zabbix/zabbix_agent2.conf`, lalu `sudo systemctl restart zabbix-agent2`.
+4. Ubah `$ZabbixServer` di `Install-Standalone.ps1` (kedua salinan: `deploy/` dan `deploy-windows/`) dan `Install-ZabbixAgent2.ps1` supaya PC baru memakai IP baru, serta `$ZabbixUrl` di `run-export-aset.ps1`.
+5. Catat IP baru di dokumentasi ini (bagian 3) dan commit.
+
+Script ini harus dijalankan di tiap PC (tidak ada kendali terpusat), jadi kerjanya sebanding jumlah PC. Itu alasan pencegahan di atas lebih penting.
 
 ---
 
@@ -233,6 +264,7 @@ Urutan prioritas. Tanda **[cek]** = saya tidak punya bukti selesai, harus diveri
 - [ ] **[cek]** Password `Admin` Zabbix sudah diganti dari bawaan.
 - [ ] Ganti password database di `docker-compose.yml` (sekarang bawaan, lemah), lalu `docker compose down && up -d` (volume database lama menyimpan password lama, jadi perlu `ALTER USER` di PostgreSQL atau hapus volume kalau data masih kosong).
 - [ ] **[cek]** Interval keempat rule discovery SNMP sudah dikembalikan dari 1m ke 1h/30m.
+- [ ] **IP `192.168.0.182` jangan diubah**, dan **kecualikan/reservasi di DHCP router** supaya tidak dibagikan ke perangkat lain. Kalau tetap berubah: prosedur dan script darurat ada di 7.7 (`Update-ZabbixServer`). Sudah di-reservasi di router? **[cek]**
 - [ ] **[cek]** Semua API token (termasuk yang bocor di chat dan token asset) sudah dihapus.
 - [ ] Uji restart Windows Server: VM `zabbix` harus nyala otomatis dan container ikut naik (`restart: unless-stopped` sudah diset).
 - [ ] Backup: belum ada. Minimal `pg_dump` terjadwal dan snapshot/ekspor VM. Backup folder `zabbix/` di luar mesin ini.
